@@ -1,0 +1,48 @@
+name: Run Processor
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: "Direct (Anyone) link to the DOCX in SharePoint/OneDrive"
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download DOCX from sharing link
+        run: |
+          curl -L "${{ github.event.inputs.file_url }}" -o input.docx
+          ls -l input.docx
+
+      - name: Run processor.py
+        env:
+          INPUT_DOCX_PATH: ${{ github.workspace }}/input.docx
+        run: |
+          mkdir -p outputs
+          python processor.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: processor-results
+          path: outputs
+          if-no-files-found: warn

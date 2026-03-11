@@ -12,16 +12,16 @@ except ImportError:
     print("Missing dependency: python-docx\nInstall it with: pip install python-docx")
     sys.exit(1)
 
-
-# ===================== CONFIG (YOUR PATHS) =====================
-BASE_TXT_PATH         = r"C:\\Program Files\\Watchtower\\Daisy Files\\Sign_Language_TranScription\\output\\rules.txt"
-INPUT_DOCX_PATH       = r"C:\\Program Files\\Watchtower\\Daisy Files\\Sign_Language_TranScription\\input.docx"  # <-- your 'output.doxc' (typo) assumed to be .docx
-OUTPUT_CSV_PATH       = r"C:\\Program Files\\Watchtower\\Daisy Files\\Sign_Language_TranScription\\output\\output.csv"
-UPDATED_RULES_PATH    = r"C:\\Program Files\\Watchtower\\Daisy Files\\Sign_Language_TranScription\\output\\updated_rules.txt"
-LATEST_ENTRIES_TXT    = r"C:\\Program Files\\Watchtower\\Daisy Files\\Sign_Language_TranScription\\output\\latest_Entries.txt"
-WRITE_UPDATED_TXT     = True
-WRITE_LATEST_TXT      = True
-# ==============================================================
+# If CI provides INPUT_DOCX_PATH, also redirect base and outputs
+if os.environ.get("INPUT_DOCX_PATH"):
+    BASE_TXT_PATH = os.environ.get("BASE_TXT_PATH", "data/rules.txt")
+    OUT_DIR = Path(os.environ.get("OUT_DIR", "outputs"))
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_CSV_PATH     = str(OUT_DIR / "output.csv")
+    UPDATED_RULES_PATH  = str(OUT_DIR / "updated_rules.txt")
+    LATEST_ENTRIES_TXT  = str(OUT_DIR / "latest_entries.txt")
+    STATS_TXT_PATH      = str(OUT_DIR / "stats.txt")
+    PRETTY_TSV_PATH     = str(OUT_DIR / "output_readable.tsv")
 
 # ===================== TOKENIZATION ============================
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]*", flags=re.UNICODE)
@@ -388,9 +388,9 @@ def main():
     if docx_env:
         docx_path = Path(docx_env)
     else:
-        docx_path = Path(INPUT_DOCX_PATH) # fallback for local testing
-    out_csv   = Path(OUTPUT_CSV_PATH)
-    out_txt   = Path(UPDATED_RULES_PATH)
+        docx_path = Path(INPUT_DOCX_PATH)  # fallback for local testing
+    out_csv    = Path(OUTPUT_CSV_PATH)
+    out_txt    = Path(UPDATED_RULES_PATH)
     latest_txt = Path(LATEST_ENTRIES_TXT)
 
     # 1) Load base rules (first occurrence per word wins; no dupes)
