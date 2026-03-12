@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: "Sharing link to the DOCX (OneDrive/SharePoint). 'download=1' will be added automatically."
+        description: "Sharing link to the DOCX (OneDrive/SharePoint). 'download=1' will be added if missing."
         required: true
         type: string
 
@@ -28,12 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Ensure the OneDrive/SharePoint link is a *download* link so curl gets the file bytes
       - name: Normalize OneDrive link to direct download
         id: link
         run: |
           IN="${{ github.event.inputs.file_url }}"
-          # Force binary download for OneDrive/SharePoint links by appending download=1
-          # See: SharePoint direct download techniques.  (References below in docs)
           if [[ "$IN" != *"download=1"* ]]; then
             if [[ "$IN" == *"?"* ]]; then
               echo "url=${IN}&download=1" >> $GITHUB_OUTPUT
@@ -65,19 +64,27 @@ jobs:
           path: outputs
           if-no-files-found: warn
 
-      # === OPTIONAL: Upload outputs to OneDrive using Microsoft Graph ===
-      # Requires repo secrets:
-      #   GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, ONEDRIVE_USER_UPN, ONEDRIVE_TARGET_FOLDER
-      # Docs: PUT /users/{id | userPrincipalName}/drive/root:/{path}:/content
-      # (Upload small files up to 250 MB)
+      # ---------- OPTIONAL: Upload results to OneDrive via Microsoft Graph ----------
+      # We first compute a boolean output so the next steps can use a simple if:
+      - name: Check Graph secrets
+        id: graph_check
+        run: |
+          ok=true
+          [[ -z "${{ secrets.GRAPH_TENANT_ID }}" ]] && ok=false
+          [[ -z "${{ secrets.GRAPH_CLIENT_ID }}" ]] && ok=false
+          [[ -z "${{ secrets.GRAPH_CLIENT_SECRET }}" ]] && ok=false
+          [[ -z "${{ secrets.ONEDRIVE_USER_UPN }}" ]] && ok=false
+          [[ -z "${{ secrets.ONEDRIVE_TARGET_FOLDER }}" ]] && ok=false
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
       - name: Install jq (for token parsing)
-        if: ${{ secrets.GRAPH_TENANT_ID && secrets.GRAPH_CLIENT_ID && secrets.GRAPH_CLIENT_SECRET && secrets.ONEDRIVE_USER_UPN && secrets.ONEDRIVE_TARGET_FOLDER }}
+        if: ${{ steps.graph_check.outputs.ok == 'true' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Upload outputs to OneDrive (Graph)
-        if: ${{ secrets.GRAPH_TENANT_ID && secrets.GRAPH_CLIENT_ID && secrets.GRAPH_CLIENT_SECRET && secrets.ONEDRIVE_USER_UPN && secrets.ONEDRIVE_TARGET_FOLDER }}
+        if: ${{ steps.graph_check.outputs.ok == 'true' }}
         env:
           TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
           CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
@@ -100,3 +107,4 @@ jobs:
               "https://graph.microsoft.com/v1.0/users/$USER_UPN/drive/root:/$TARGET_FOLDER/$name:/content" \
               > /dev/null
           done
+``
