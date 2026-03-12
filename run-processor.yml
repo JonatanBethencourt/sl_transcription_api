@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: "Direct (Anyone) link to the DOCX in SharePoint/OneDrive"
+        description: "Sharing link to the DOCX (OneDrive/SharePoint). 'download=1' will be added automatically."
         required: true
         type: string
 
@@ -28,21 +28,75 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Download DOCX from sharing link
+      - name: Normalize OneDrive link to direct download
+        id: link
         run: |
-          curl -L "${{ github.event.inputs.file_url }}" -o input.docx
+          IN="${{ github.event.inputs.file_url }}"
+          # Force binary download for OneDrive/SharePoint links by appending download=1
+          # See: SharePoint direct download techniques.  (References below in docs)
+          if [[ "$IN" != *"download=1"* ]]; then
+            if [[ "$IN" == *"?"* ]]; then
+              echo "url=${IN}&download=1" >> $GITHUB_OUTPUT
+            else
+              echo "url=${IN}?download=1" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "url=${IN}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download DOCX
+        run: |
+          curl -fsSL "${{ steps.link.outputs.url }}" -o input.docx
           ls -l input.docx
 
       - name: Run processor.py
         env:
           INPUT_DOCX_PATH: ${{ github.workspace }}/input.docx
+          OUT_DIR: ${{ github.workspace }}/outputs
+          BASE_TXT_PATH: data/rules.txt
         run: |
           mkdir -p outputs
           python processor.py
 
-      - name: Upload artifacts
+      - name: Upload outputs as CI artifacts
         uses: actions/upload-artifact@v4
         with:
           name: processor-results
           path: outputs
           if-no-files-found: warn
+
+      # === OPTIONAL: Upload outputs to OneDrive using Microsoft Graph ===
+      # Requires repo secrets:
+      #   GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, ONEDRIVE_USER_UPN, ONEDRIVE_TARGET_FOLDER
+      # Docs: PUT /users/{id | userPrincipalName}/drive/root:/{path}:/content
+      # (Upload small files up to 250 MB)
+      - name: Install jq (for token parsing)
+        if: ${{ secrets.GRAPH_TENANT_ID && secrets.GRAPH_CLIENT_ID && secrets.GRAPH_CLIENT_SECRET && secrets.ONEDRIVE_USER_UPN && secrets.ONEDRIVE_TARGET_FOLDER }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Upload outputs to OneDrive (Graph)
+        if: ${{ secrets.GRAPH_TENANT_ID && secrets.GRAPH_CLIENT_ID && secrets.GRAPH_CLIENT_SECRET && secrets.ONEDRIVE_USER_UPN && secrets.ONEDRIVE_TARGET_FOLDER }}
+        env:
+          TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
+          CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
+          USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          TARGET_FOLDER: ${{ secrets.ONEDRIVE_TARGET_FOLDER }}
+        run: |
+          set -euo pipefail
+          token=$(curl -sS -X POST \
+            -d "client_id=$CLIENT_ID&scope=https%3A%2F%2Fgraph.microsoft.com%2F.default&client_secret=$CLIENT_SECRET&grant_type=client_credentials" \
+            "https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/token" | jq -r .access_token)
+
+          shopt -s nullglob
+          for f in outputs/*; do
+            name=$(basename "$f")
+            echo "Uploading $name to OneDrive: $TARGET_FOLDER"
+            curl -sS -X PUT \
+              -H "Authorization: Bearer $token" \
+              --data-binary @"$f" \
+              "https://graph.microsoft.com/v1.0/users/$USER_UPN/drive/root:/$TARGET_FOLDER/$name:/content" \
+              > /dev/null
+          done
