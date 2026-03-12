@@ -1,0 +1,14 @@
+{
+  "url": "https://api.github.com/repos/{OWNER}/{REPO}/actions/workflows/run-processor.yml/dispatches",
+  "method": "POST",
+  "headers": {
+    "Authorization": "Bearer @{environment('GITHUB_PAT')}",
+    "Accept": "application/vnd.github+json"
+  },
+  "body": {
+    "ref": "main",
+    "inputs": {
+      "file_url": "@{outputs('Compose')}"
+    }
+  }
+}
