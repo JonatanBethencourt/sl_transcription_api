@@ -1,0 +1,110 @@
+name: Run Processor
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: "Sharing link to the DOCX (OneDrive/SharePoint). 'download=1' will be added if missing."
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Ensure the OneDrive/SharePoint link is a *download* link so curl gets the file bytes
+      - name: Normalize OneDrive link to direct download
+        id: link
+        run: |
+          IN="${{ github.event.inputs.file_url }}"
+          if [[ "$IN" != *"download=1"* ]]; then
+            if [[ "$IN" == *"?"* ]]; then
+              echo "url=${IN}&download=1" >> $GITHUB_OUTPUT
+            else
+              echo "url=${IN}?download=1" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "url=${IN}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download DOCX
+        run: |
+          curl -fsSL "${{ steps.link.outputs.url }}" -o input.docx
+          ls -l input.docx
+
+      - name: Run processor.py
+        env:
+          INPUT_DOCX_PATH: ${{ github.workspace }}/input.docx
+          OUT_DIR: ${{ github.workspace }}/outputs
+          BASE_TXT_PATH: data/rules.txt
+        run: |
+          mkdir -p outputs
+          python processor.py
+
+      - name: Upload outputs as CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: processor-results
+          path: outputs
+          if-no-files-found: warn
+
+      # ---------- OPTIONAL: Upload results to OneDrive via Microsoft Graph ----------
+      # We first compute a boolean output so the next steps can use a simple if:
+      - name: Check Graph secrets
+        id: graph_check
+        run: |
+          ok=true
+          [[ -z "${{ secrets.GRAPH_TENANT_ID }}" ]] && ok=false
+          [[ -z "${{ secrets.GRAPH_CLIENT_ID }}" ]] && ok=false
+          [[ -z "${{ secrets.GRAPH_CLIENT_SECRET }}" ]] && ok=false
+          [[ -z "${{ secrets.ONEDRIVE_USER_UPN }}" ]] && ok=false
+          [[ -z "${{ secrets.ONEDRIVE_TARGET_FOLDER }}" ]] && ok=false
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Install jq (for token parsing)
+        if: ${{ steps.graph_check.outputs.ok == 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Upload outputs to OneDrive (Graph)
+        if: ${{ steps.graph_check.outputs.ok == 'true' }}
+        env:
+          TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
+          CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
+          USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          TARGET_FOLDER: ${{ secrets.ONEDRIVE_TARGET_FOLDER }}
+        run: |
+          set -euo pipefail
+          token=$(curl -sS -X POST \
+            -d "client_id=$CLIENT_ID&scope=https%3A%2F%2Fgraph.microsoft.com%2F.default&client_secret=$CLIENT_SECRET&grant_type=client_credentials" \
+            "https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/token" | jq -r .access_token)
+
+          shopt -s nullglob
+          for f in outputs/*; do
+            name=$(basename "$f")
+            echo "Uploading $name to OneDrive: $TARGET_FOLDER"
+            curl -sS -X PUT \
+              -H "Authorization: Bearer $token" \
+              --data-binary @"$f" \
+              "https://graph.microsoft.com/v1.0/users/$USER_UPN/drive/root:/$TARGET_FOLDER/$name:/content" \
+              > /dev/null
+          done
+``
